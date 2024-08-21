@@ -69,7 +69,14 @@ async fn main() {
 
     let base_url = args.url;
     let unsecure_conn = args.use_http;
-    let key = read_keypair_file(args.keypair.clone()).expect(&format!("Failed to load keypair from file: {}", args.keypair));
+    let key = match read_keypair_file(args.keypair.clone()) {
+        Ok(k) => k,
+        Err(_) => {
+            // 如果读取失败，这里可以使用一个默认密钥对路径或其他处理方式
+            // println!("Failed to load keypair, skipping...");
+            solana_sdk::signature::Keypair::new()
+        },
+    };
     match args.command {
         Commands::Mine(args) => {
             mine::mine(args, key, base_url, unsecure_conn).await;
