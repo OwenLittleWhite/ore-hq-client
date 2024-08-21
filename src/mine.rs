@@ -7,6 +7,7 @@ use solana_sdk::{signature::Keypair, signer::Signer};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::{handshake::client::{generate_key, Request}, Message}};
 use base64::prelude::*;
+use solana_sdk::pubkey::Pubkey;
 
 #[derive(Debug)]
 pub enum ServerMessage {
@@ -75,6 +76,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
         };
         println!("Server Timestamp: {}", timestamp);
         let address = _address.clone();
+        let pubkey = Pubkey::try_from(address.as_str()).expect("Invalid pubkey");
         // let ts_msg = timestamp.to_le_bytes();
         // let sig = key.sign_message(&ts_msg);
 
@@ -120,7 +122,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                 // let sig = key.sign_message(&msg).to_string().as_bytes().to_vec();
                 let mut bin_data: Vec<u8> = Vec::new();
                 bin_data.push(0u8);
-                bin_data.extend_from_slice(&address.clone().into_bytes());
+                bin_data.extend_from_slice(&pubkey.to_bytes());
                 bin_data.extend_from_slice(&msg);
                 bin_data.extend("xxx".bytes());
 
@@ -233,7 +235,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                             bin_data[01..17].copy_from_slice(&best_hash_bin);
                             bin_data[17..25].copy_from_slice(&best_nonce_bin);
                             // bin_data[25..57].copy_from_slice(&key.pubkey().to_bytes());
-                            bin_data[25..57].copy_from_slice(&address.clone().into_bytes());
+                            bin_data[25..57].copy_from_slice(&pubkey.to_bytes());
 
                             let mut bin_vec = bin_data.to_vec();
                             // bin_vec.extend(signature);
@@ -252,7 +254,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                             // let sig = key.sign_message(&msg).to_string().as_bytes().to_vec();
                             let mut bin_data: Vec<u8> = Vec::new();
                             bin_data.push(0u8);
-                            bin_data.extend_from_slice(&address.clone().into_bytes());
+                            bin_data.extend_from_slice(&pubkey.to_bytes());
                             bin_data.extend_from_slice(&msg);
                             bin_data.extend("xxx".bytes());
                             {
