@@ -138,6 +138,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                             println!("Received start mining message!");
                             println!("Mining starting...");
                             println!("Nonce range: {} - {}", nonce_range.start, nonce_range.end);
+                            println!("Should return within Cutoff: {}", cutoff);
                             let hash_timer = Instant::now();
                             let core_ids = core_affinity::get_core_ids().unwrap();
                             let nonces_per_thread = 10_000;
@@ -177,11 +178,12 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                                                     break;
                                                 }
 
-                                                if nonce % 100 == 0 {
+                                                if nonce % 50 == 0 {
                                                     if hash_timer.elapsed().as_secs().ge(&cutoff) {
-                                                        if best_difficulty.ge(&8) {
-                                                            break;
-                                                        }
+                                                        // if best_difficulty.ge(&8) {
+                                                        //     break;
+                                                        // }
+                                                        break;
                                                     }
                                                 } 
 
@@ -246,7 +248,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
                                 let _ = message_sender.send(Message::Binary(bin_vec)).await;
                             }
 
-                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            tokio::time::sleep(Duration::from_secs(1)).await;
 
                             let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time went backwards").as_secs();
 
