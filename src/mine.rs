@@ -1,20 +1,25 @@
-use std::{
-    ops::{ ControlFlow, Range }, str::FromStr, sync::Arc, time::{ Duration, Instant, SystemTime, UNIX_EPOCH }
-};
-use clap::{ arg, Parser };
+use base64::prelude::*;
+use clap::{arg, Parser};
 use drillx_2::equix;
-use futures_util::{ stream::SplitSink, SinkExt, StreamExt };
-use solana_sdk::{  signature::Keypair };
-use tokio::sync::{ mpsc::UnboundedSender, Mutex };
-use tokio::net::{ TcpStream };
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::Keypair;
+use std::{
+    ops::{ControlFlow, Range},
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::net::TcpStream;
+use tokio::sync::{mpsc::UnboundedSender, Mutex};
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{ handshake::client::{ generate_key, Request }, Message },
-    MaybeTlsStream,
-    WebSocketStream,
+    tungstenite::{
+        handshake::client::{generate_key, Request},
+        Message,
+    },
+    MaybeTlsStream, WebSocketStream,
 };
-use base64::prelude::*;
-use solana_sdk::pubkey::Pubkey;
 
 #[derive(Debug)]
 pub enum ServerMessage {
@@ -34,7 +39,7 @@ pub struct MineArgs {
     #[arg(long, value_name = "address", help = "钱包公钥地址", required = true)]
     pub address: String,
 }
-
+#[derive(Clone)]
 pub struct MineTask {
     pub challenge: [u8; 32],
     pub nonce_range: Range<u64>,
@@ -48,8 +53,8 @@ impl MineTask {
         MineTask {
             challenge: [0u8; 32],
             nonce_range: 0..0, // 空范围
-            cutoff: 0, // 默认值
-            sender:None, 
+            cutoff: 1000,      // 默认值
+            sender: None,
             receive_time: SystemTime::now(),
         }
     }
@@ -59,7 +64,7 @@ async fn connect_and_receive(address: &str, url: String, mine_task: Arc<Mutex<Mi
     let pubkey = Pubkey::from_str(address).unwrap();
     loop {
         let base_url = url.clone();
-        let mut ws_url_str = {format!("ws://{}", url)};
+        let mut ws_url_str = { format!("ws://{}", url) };
         if ws_url_str.chars().last().unwrap() != '/' {
             ws_url_str.push('/');
         }
@@ -67,10 +72,10 @@ async fn connect_and_receive(address: &str, url: String, mine_task: Arc<Mutex<Mi
 
         let http_prefix = "http".to_string();
         print!("Connecting to server {}...", ws_url_str);
-        let timestamp = if
-            let Ok(response) = client
-                .get(format!("{}://{}/timestamp", http_prefix, base_url))
-                .send().await
+        let timestamp = if let Ok(response) = client
+            .get(format!("{}://{}/timestamp", http_prefix, base_url))
+            .send()
+            .await
         {
             if let Ok(ts) = response.text().await {
                 if let Ok(ts) = ts.parse::<u64>() {
@@ -153,13 +158,15 @@ async fn connect_and_receive(address: &str, url: String, mine_task: Arc<Mutex<Mi
                     match msg {
                         ServerMessage::StartMining(challenge, nonce_range, cutoff) => {
                             println!("received start mining message");
-                            let mut mine_task = mine_task_clone.lock().await;
-                            let _sender = message_sender.clone();
-                            mine_task.challenge = challenge;
-                            mine_task.nonce_range = nonce_range;
-                            mine_task.cutoff = cutoff;
-                            mine_task.sender = Some(_sender);
-                            mine_task.receive_time = SystemTime::now();
+                            {
+                                let mut mine_task_lock = mine_task_clone.lock().await;
+                                let _sender = message_sender.clone();
+                                mine_task_lock.challenge = challenge;
+                                mine_task_lock.nonce_range = nonce_range;
+                                mine_task_lock.cutoff = cutoff;
+                                mine_task_lock.sender = Some(_sender);
+                                mine_task_lock.receive_time = SystemTime::now();
+                            }
                         }
                     }
                 }
@@ -188,18 +195,22 @@ async fn connect_and_receive(address: &str, url: String, mine_task: Arc<Mutex<Mi
 async fn mine_and_send(address: &str, _mine_task: Arc<Mutex<MineTask>>, threads: u32) -> bool {
     print!("Mining...");
     let pubkey = Pubkey::from_str(address).expect("Invalid pubkey");
-    let mine_task_clone = Arc::clone(&_mine_task);
+    let mine_task_share = Arc::clone(&_mine_task);
     loop {
-        let mine_task = { mine_task_clone.lock().await };
-        if mine_task.challenge.is_empty() {
+        let mine_task_clone = mine_task_share.lock().await;
+        let mine_task = mine_task_clone.clone();
+        drop(mine_task_clone);
+        if mine_task.cutoff == 1000 {
             println!("No challenge to mine, waitting...");
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
         // 如果mine_task的receive_time+cutoff超过当前时间，则重新发送StartMining消息
-        if
-            SystemTime::now().duration_since(mine_task.receive_time).unwrap().as_secs() >
-            mine_task.cutoff
+        if SystemTime::now()
+            .duration_since(mine_task.receive_time)
+            .unwrap()
+            .as_secs()
+            > mine_task.cutoff
         {
             println!("Challenge expired, waitting...");
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -207,9 +218,15 @@ async fn mine_and_send(address: &str, _mine_task: Arc<Mutex<MineTask>>, threads:
         }
         let nonce_range = mine_task.nonce_range.clone();
         let challenge = mine_task.challenge;
-        let cutoff =
-            mine_task.cutoff -
-            SystemTime::now().duration_since(mine_task.receive_time).unwrap().as_secs();
+        let cutoff = mine_task.cutoff
+            - SystemTime::now()
+                .duration_since(mine_task.receive_time)
+                .unwrap()
+                .as_secs();
+        println!("Mining starting...");
+        println!("Nonce range: {} - {}", nonce_range.start, nonce_range.end);
+        println!("Cutoff: {}", cutoff);
+        println!("Challenge: {:?}", challenge);
         let message_sender = mine_task.sender.clone();
         let hash_timer = Instant::now();
         let core_ids = core_affinity::get_core_ids().unwrap();
@@ -235,7 +252,7 @@ async fn mine_and_send(address: &str, _mine_task: Arc<Mutex<MineTask>>, threads:
                             for hx in drillx_2::get_hashes_with_memory(
                                 &mut memory,
                                 &challenge,
-                                &nonce.to_le_bytes()
+                                &nonce.to_le_bytes(),
                             ) {
                                 total_hashes += 1;
                                 let difficulty = hx.difficulty();
@@ -316,7 +333,7 @@ async fn mine_and_send(address: &str, _mine_task: Arc<Mutex<MineTask>>, threads:
         bin_vec.extend("xxx".bytes());
         let message_sender_clone = message_sender.clone().unwrap();
         {
-            let mut message_sender = {message_sender_clone.lock().await};
+            let mut message_sender = { message_sender_clone.lock().await };
             let _ = message_sender.send(Message::Binary(bin_vec)).await;
         }
 
@@ -341,9 +358,11 @@ async fn mine_and_send(address: &str, _mine_task: Arc<Mutex<MineTask>>, threads:
         }
         // 获取新的task，并且判断和原先的task是否相同，相同则不发送
         let mine_task_clone = Arc::clone(&_mine_task);
+
         loop {
-            let new_mine_task ={ mine_task_clone.lock().await};
+            let new_mine_task = { mine_task_clone.lock().await };
             if new_mine_task.challenge != mine_task.challenge {
+                println!("New task received, mining...");
                 break;
             } else {
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -356,10 +375,8 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
     let _address = args.address;
     let threads = args.cores;
     let mine_task = Arc::new(Mutex::new(MineTask::new()));
-     // 将 url 按照逗号分隔成一个字符串向量
-     let urls: Vec<String> = url.split(',')
-     .map(|s| s.trim().to_string())
-     .collect();
+    // 将 url 按照逗号分隔成一个字符串向量
+    let urls: Vec<String> = url.split(',').map(|s| s.trim().to_string()).collect();
     let _address_clone = _address.clone();
     for _url in urls.into_iter() {
         let mine_task_clone = mine_task.clone();
@@ -370,7 +387,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
     }
     let mine_task_clone = mine_task.clone();
     let _address_clone = _address.clone();
-    tokio::spawn(async move { 
+    tokio::spawn(async move {
         mine_and_send(&_address_clone, mine_task_clone, threads).await;
     });
     loop {
@@ -380,7 +397,7 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
 
 fn process_message(
     msg: Message,
-    message_channel: UnboundedSender<ServerMessage>
+    message_channel: UnboundedSender<ServerMessage>,
 ) -> ControlFlow<(), ()> {
     match msg {
         Message::Text(t) => {
@@ -422,11 +439,8 @@ fn process_message(
                         }
                         let nonce_end = u64::from_le_bytes(nonce_end_bytes);
 
-                        let msg = ServerMessage::StartMining(
-                            hash_bytes,
-                            nonce_start..nonce_end,
-                            cutoff
-                        );
+                        let msg =
+                            ServerMessage::StartMining(hash_bytes, nonce_start..nonce_end, cutoff);
 
                         let _ = message_channel.send(msg);
                     }
