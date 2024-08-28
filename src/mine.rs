@@ -196,10 +196,6 @@ async fn connect_and_receive(
                                 if let Some(_sender) = mine_task_lock.clone().sender {
                                     continue;
                                 } else {
-                                    // if cutoff <= 0 {
-                                    //     println!("{} received start mining message, but cutoff is too small", url);
-                                    //     continue;
-                                    // }
                                     println!("{} received start mining message", url);
                                     let _sender = message_sender.clone();
                                     mine_task_lock.challenge = challenge;
@@ -389,21 +385,21 @@ async fn mine_and_send(
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         // 获取新的task，并且判断和原先的task是否相同，相同则不发送
-        loop {
-            let mut mine_task_clone = mine_task_share.lock().await;
-            let mine_task = mine_task_clone.clone();
-            let new_mine_task = mine_task.clone();
-            if new_mine_task.challenge != old_challenge {
-                println!("New task received, mining...");
-                drop(mine_task_clone);
-                break;
-            } else {
-                mine_task_clone.sender = None;
-                drop(mine_task_clone);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                println!("Waiting for new task...");
-            }
-        }
+        // loop {
+        //     let mut mine_task_clone = mine_task_share.lock().await;
+        //     let mine_task = mine_task_clone.clone();
+        //     let new_mine_task = mine_task.clone();
+        //     if new_mine_task.challenge != old_challenge {
+        //         println!("New task received, mining...");
+        //         drop(mine_task_clone);
+        //         break;
+        //     } else {
+        //         mine_task_clone.sender = None;
+        //         drop(mine_task_clone);
+        //         tokio::time::sleep(Duration::from_secs(1)).await;
+        //         println!("Waiting for new task...");
+        //     }
+        // }
     }
 }
 pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
