@@ -36,6 +36,14 @@ pub struct MineArgs {
 
     #[arg(long, value_name = "address", help = "钱包公钥地址", required = true)]
     pub address: String,
+
+    #[arg(
+        long,
+        value_name = "cutoff",
+        default_value = "30",
+        help = "单次最大挖矿时间"
+    )]
+    pub cutoff: u32,
 }
 
 pub struct MineTask {
@@ -77,7 +85,8 @@ async fn connect_and_receive(
     address: &str,
     url: String,
     mine_task: Arc<Mutex<MineTask>>,
-    request_mine: Arc<Mutex<bool>>
+    request_mine: Arc<Mutex<bool>>,
+    last_challenge: Arc<Mutex<[u8; 32]>>
 ) {
     let pubkey = Pubkey::from_str(address).unwrap();
     loop {
@@ -124,7 +133,8 @@ async fn connect_and_receive(
 
         let auth = BASE64_STANDARD.encode(format!("{}:{}", address, ""));
 
-        println!("Connecting to server {}...", url);
+        println!("Connecting to server {}...", base_url);
+        let base_url_clone = base_url.clone();
         let request = Request::builder()
             .method("GET")
             .uri(url.to_string())
@@ -178,25 +188,30 @@ async fn connect_and_receive(
 
                             let _ = sender_clone.send(Message::Binary(bin_data)).await;
                         }
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                 });
 
                 // receive messages
                 let message_sender = share_sender.clone();
                 let mine_task_clone = Arc::clone(&mine_task);
-                let url_clone = url.clone();
+                let url_clone = base_url_clone.clone();
                 while let Some(msg) = message_receiver.recv().await {
                     let url = url_clone.clone();
                     match msg {
                         ServerMessage::StartMining(challenge, nonce_range, cutoff) => {
                             {
-                                println!("{} cutoff: {}", url, cutoff);
+                                let last_challenge_lock = last_challenge.lock().await;
+                                let last_challenge = *last_challenge_lock;
+                                if last_challenge == challenge {
+                                    println!("Duplicate challenge received\n");
+                                    continue;
+                                }
                                 let mut mine_task_lock = mine_task_clone.lock().await;
                                 if let Some(_sender) = mine_task_lock.clone().sender {
                                     continue;
                                 } else {
-                                    println!("{} received start mining message", url);
+                                    println!("{} received start mining message, Cutoff {}", url, cutoff);
                                     let _sender = message_sender.clone();
                                     mine_task_lock.challenge = challenge;
                                     mine_task_lock.nonce_range = nonce_range;
@@ -235,19 +250,26 @@ async fn mine_and_send(
     address: &str,
     _mine_task: Arc<Mutex<MineTask>>,
     threads: u32,
-    request_mine: Arc<Mutex<bool>>
+    request_mine: Arc<Mutex<bool>>,
+    last_challenge: Arc<Mutex<[u8; 32]>>,
+    max_cutoff: u32,
 ) -> bool {
     let pubkey = Pubkey::from_str(address).expect("Invalid pubkey");
     let mine_task_share = Arc::clone(&_mine_task);
     let request_mine_clone = Arc::clone(&request_mine);
+    let last_challenge_clone = Arc::clone(&last_challenge);
+    let max_cutoff_clone = max_cutoff.clone();
     loop {
         let mut mine_task_clone = mine_task_share.lock().await;
-        let  mut mine_task = mine_task_clone.clone();
+        let mut mine_task = mine_task_clone.clone();
         mine_task_clone.sender = None;
         drop(mine_task_clone);
         let old_challenge = mine_task.challenge.clone();
         if mine_task.sender.is_none() {
             println!("No challenge to mine, waitting...");
+            let mut last_challenge = last_challenge_clone.lock().await;
+            *last_challenge = [0; 32];
+            drop(last_challenge);
             tokio::time::sleep(Duration::from_secs(1)).await;
             continue;
         }
@@ -262,9 +284,12 @@ async fn mine_and_send(
         }
         let nonce_range = mine_task.nonce_range.clone();
         let challenge = mine_task.challenge;
-        let cutoff =
+        let mut cutoff: u64 =
             mine_task.cutoff -
             SystemTime::now().duration_since(mine_task.receive_time).unwrap().as_secs();
+        if cutoff > max_cutoff_clone as u64 {
+            cutoff = max_cutoff_clone as u64;
+        }
         println!("Mining starting... {}", mine_task.url);
         println!("Nonce range: {} - {}", nonce_range.start, nonce_range.end);
         println!("Cutoff: {}", cutoff);
@@ -375,36 +400,22 @@ async fn mine_and_send(
         bin_vec.extend("xxx".bytes());
         let message_sender = &mine_task.sender;
         let message_sender_clone = message_sender.clone().unwrap();
-        let mut message_sender =  message_sender_clone.lock().await ;
+        let mut message_sender = message_sender_clone.lock().await;
         let _ = message_sender.send(Message::Binary(bin_vec)).await;
         drop(mine_task);
         println!("Mining complete!!!!!!!!!!!");
         *request_mine_lock = true;
         drop(request_mine_lock);
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        // 获取新的task，并且判断和原先的task是否相同，相同则不发送
-        // loop {
-        //     let mut mine_task_clone = mine_task_share.lock().await;
-        //     let mine_task = mine_task_clone.clone();
-        //     let new_mine_task = mine_task.clone();
-        //     if new_mine_task.challenge != old_challenge {
-        //         println!("New task received, mining...");
-        //         drop(mine_task_clone);
-        //         break;
-        //     } else {
-        //         mine_task_clone.sender = None;
-        //         drop(mine_task_clone);
-        //         tokio::time::sleep(Duration::from_secs(1)).await;
-        //         println!("Waiting for new task...");
-        //     }
-        // }
+        let mut last_challenge = last_challenge_clone.lock().await;
+        *last_challenge = challenge;
+        drop(last_challenge);
+        tokio::time::sleep(Duration::from_millis(800)).await;
     }
 }
 pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
     let _address = args.address;
     let threads = args.cores;
+    let max_cutoff = args.cutoff;
     let mine_task = Arc::new(Mutex::new(MineTask::new()));
     // 将 url 按照逗号分隔成一个字符串向量
     let urls: Vec<String> = url
@@ -413,24 +424,36 @@ pub async fn mine(args: MineArgs, key: Keypair, url: String, unsecure: bool) {
         .collect();
     let _address_clone = _address.clone();
     let request_for_mine = Arc::new(Mutex::new(true));
+    let last_challenge = Arc::new(Mutex::new([0; 32]));
     for _url in urls.into_iter() {
         let mine_task_clone = mine_task.clone();
         let _address_clone_clone = _address_clone.clone();
         let request_clone = request_for_mine.clone();
+        let last_challenge_clone = last_challenge.clone();
         tokio::spawn(async move {
             connect_and_receive(
                 &_address_clone_clone,
                 _url.to_string(),
                 mine_task_clone,
-                request_clone
+                request_clone,
+                last_challenge_clone
             ).await;
         });
     }
     let mine_task_clone = mine_task.clone();
     let _address_clone = _address.clone();
     let request_clone = request_for_mine.clone();
+    let last_challenge = last_challenge.clone();
+    let max_cutoff_clone = max_cutoff.clone();
     tokio::spawn(async move {
-        mine_and_send(&_address_clone, mine_task_clone, threads, request_clone).await;
+        mine_and_send(
+            &_address_clone,
+            mine_task_clone,
+            threads,
+            request_clone,
+            last_challenge,
+            max_cutoff_clone,
+        ).await;
     });
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
