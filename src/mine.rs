@@ -207,19 +207,23 @@ async fn connect_and_receive(
                                     println!("Duplicate challenge received\n");
                                     continue;
                                 }
-                                let mut mine_task_lock = mine_task_clone.lock().await;
-                                if let Some(_sender) = mine_task_lock.clone().sender {
-                                    continue;
+                                if let Ok(mut mine_task_lock) = mine_task_clone.try_lock() {
+                                    if let Some(_sender) = mine_task_lock.clone().sender {
+                                        continue;
+                                    } else {
+                                        println!("{} received start mining message, Cutoff {}", url, cutoff);
+                                        let _sender = message_sender.clone();
+                                        mine_task_lock.challenge = challenge;
+                                        mine_task_lock.nonce_range = nonce_range;
+                                        mine_task_lock.cutoff = cutoff;
+                                        mine_task_lock.sender = Some(_sender);
+                                        mine_task_lock.receive_time = SystemTime::now();
+                                        mine_task_lock.url = url.to_string();
+                                    }
                                 } else {
-                                    println!("{} received start mining message, Cutoff {}", url, cutoff);
-                                    let _sender = message_sender.clone();
-                                    mine_task_lock.challenge = challenge;
-                                    mine_task_lock.nonce_range = nonce_range;
-                                    mine_task_lock.cutoff = cutoff;
-                                    mine_task_lock.sender = Some(_sender);
-                                    mine_task_lock.receive_time = SystemTime::now();
-                                    mine_task_lock.url = url.to_string();
+                                    println!("Mine is running, so that we be locked {} {}", url, cutoff)
                                 }
+                                
                             }
                         }
                     }
