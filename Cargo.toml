@@ -28,3 +28,4 @@ crossbeam = "0.8.0"
 rand = "0.8.4"
 rand_chacha = "0.3.0"
 openssl = { version = "0.10", features = ["vendored"] }
+chrono = "0.4.19"
