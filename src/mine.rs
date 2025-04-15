@@ -1,7 +1,7 @@
 use base64::prelude::*;
 use chrono::{DateTime, TimeZone, Utc};
 use clap::{arg, Parser};
-use drillx_2::equix;
+use drillx::equix;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::Keypair;
@@ -327,11 +327,11 @@ async fn mine_and_send(
                         let mut nonce = first_nonce;
                         let mut best_nonce = nonce;
                         let mut best_difficulty = 0;
-                        let mut best_hash = drillx_2::Hash::default();
+                        let mut best_hash = drillx::Hash::default();
                         let mut total_hashes: u64 = 0;
                         loop {
                             // Create hash
-                            for hx in drillx_2::get_hashes_with_memory(
+                            for hx in drillx::hashes_with_memory(
                                 &mut memory,
                                 &challenge,
                                 &nonce.to_le_bytes(),
@@ -370,7 +370,7 @@ async fn mine_and_send(
         // Join handles and return best nonce
         let mut best_nonce: u64 = 0;
         let mut best_difficulty = 0;
-        let mut best_hash = drillx_2::Hash::default();
+        let mut best_hash = drillx::Hash::default();
         let mut total_nonces_checked = 0;
         for h in handles {
             if let Ok(Some((nonce, difficulty, hash, nonces_checked))) = h.join() {
